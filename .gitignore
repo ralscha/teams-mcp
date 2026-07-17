@@ -1,0 +1,5 @@
+/teams-mcp
+/teams-mcp.exe
+/dist/
+*.test
+coverage.out
