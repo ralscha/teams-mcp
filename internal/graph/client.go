@@ -10,10 +10,18 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const maxResponseSize = 16 << 20
+
+const (
+	defaultRetryAttempts = 3
+	retryBaseDelay       = 250 * time.Millisecond
+	retryMaxDelay        = 2 * time.Second
+)
 
 // Client is a Microsoft Graph client. Authentication is supplied by the
 // configured HTTP client, normally created by internal/auth.
@@ -21,6 +29,8 @@ type Client struct {
 	httpClient *http.Client
 	baseURL    *url.URL
 	userID     string
+	retries    int
+	wait       func(context.Context, time.Duration) error
 }
 
 // NewClient creates a Graph client rooted at graphBaseURL, such as
@@ -40,7 +50,13 @@ func NewClient(graphBaseURL, userID string, httpClient *http.Client) (*Client, e
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &Client{httpClient: httpClient, baseURL: u, userID: userID}, nil
+	return &Client{
+		httpClient: httpClient,
+		baseURL:    u,
+		userID:     userID,
+		retries:    defaultRetryAttempts,
+		wait:       sleepContext,
+	}, nil
 }
 
 // APIError represents a non-2xx response from Microsoft Graph.
@@ -64,46 +80,122 @@ func (e *APIError) Error() string {
 }
 
 func (c *Client) doJSON(ctx context.Context, method, ref string, query url.Values, body, out any) error {
-	var reader io.Reader
+	var payload []byte
 	if body != nil {
-		encoded, err := json.Marshal(body)
+		var err error
+		payload, err = json.Marshal(body)
 		if err != nil {
 			return fmt.Errorf("teams graph: encode request body: %w", err)
 		}
-		reader = bytes.NewReader(encoded)
 	}
 
-	req, err := c.newRequest(ctx, method, ref, query, reader)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("teams graph: request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
-	if err != nil {
-		return fmt.Errorf("teams graph: read response body: %w", err)
-	}
-	if len(responseBody) > maxResponseSize {
-		return fmt.Errorf("teams graph: response exceeds %d bytes", maxResponseSize)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return parseAPIError(resp, responseBody)
-	}
-	if out != nil && len(responseBody) > 0 {
-		if err := json.Unmarshal(responseBody, out); err != nil {
-			return fmt.Errorf("teams graph: decode response body: %w", err)
+	for attempt := 1; ; attempt++ {
+		var reader io.Reader
+		if payload != nil {
+			reader = bytes.NewReader(payload)
 		}
+
+		req, err := c.newRequest(ctx, method, ref, query, reader)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/json")
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("teams graph: request failed: %w", err)
+		}
+
+		responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("teams graph: read response body: %w", readErr)
+		}
+		if len(responseBody) > maxResponseSize {
+			return fmt.Errorf("teams graph: response exceeds %d bytes", maxResponseSize)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			apiErr := parseAPIError(resp, responseBody)
+			if !isRetryableStatus(resp.StatusCode) || attempt >= c.retries {
+				return apiErr
+			}
+			delay := retryDelay(resp.Header.Get("Retry-After"), attempt)
+			if err := c.wait(ctx, delay); err != nil {
+				return fmt.Errorf("teams graph: retry canceled: %w", err)
+			}
+			continue
+		}
+		if out != nil && len(responseBody) > 0 {
+			if err := json.Unmarshal(responseBody, out); err != nil {
+				return fmt.Errorf("teams graph: decode response body: %w", err)
+			}
+		}
+		return nil
 	}
-	return nil
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isRetryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code == http.StatusServiceUnavailable || code == http.StatusGatewayTimeout
+}
+
+func retryDelay(retryAfter string, attempt int) time.Duration {
+	if delay, ok := parseRetryAfter(retryAfter); ok {
+		// Retry-After is server controlled, so cap it to avoid blocking a tool
+		// call for an unbounded amount of time.
+		if delay > retryMaxDelay {
+			return retryMaxDelay
+		}
+		return delay
+	}
+	delay := retryBaseDelay << (attempt - 1)
+	if delay > retryMaxDelay {
+		return retryMaxDelay
+	}
+	return delay
+}
+
+func parseRetryAfter(value string) (time.Duration, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, false
+	}
+	// RFC 9110 allows either a non-negative integer number of seconds or an
+	// HTTP-date.
+	if seconds, err := strconv.Atoi(trimmed); err == nil {
+		if seconds < 0 {
+			return 0, true
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	for _, layout := range []string{time.RFC1123, time.RFC1123Z} {
+		timestamp, err := time.Parse(layout, trimmed)
+		if err != nil {
+			continue
+		}
+		delay := time.Until(timestamp)
+		if delay < 0 {
+			return 0, true
+		}
+		return delay, true
+	}
+	return 0, false
 }
 
 func (c *Client) newRequest(ctx context.Context, method, ref string, query url.Values, body io.Reader) (*http.Request, error) {

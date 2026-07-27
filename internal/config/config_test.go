@@ -31,7 +31,7 @@ func TestLoadDeviceCodeDefaults(t *testing.T) {
 	if cfg.Mode != ModeReadOnly || cfg.Transport != TransportStdio || cfg.HTTPAddr != ":8080" {
 		t.Errorf("unexpected defaults: %+v", cfg)
 	}
-	wantScopes := []string{"offline_access", "User.Read", "Team.ReadBasic.All", "Channel.ReadBasic.All", "ChannelMessage.Read.All", "Chat.Read"}
+	wantScopes := []string{"offline_access", "User.Read", "User.ReadBasic.All", "Team.ReadBasic.All", "TeamMember.Read.All", "Channel.ReadBasic.All", "ChannelMessage.Read.All", "Chat.Read", "ChatMember.Read"}
 	if !slices.Equal(cfg.Scopes, wantScopes) {
 		t.Errorf("Scopes = %v, want %v", cfg.Scopes, wantScopes)
 	}
@@ -45,8 +45,10 @@ func TestLoadReadWriteAddsSendScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if !slices.Contains(cfg.Scopes, "ChannelMessage.Send") || !slices.Contains(cfg.Scopes, "ChatMessage.Send") {
-		t.Errorf("Scopes = %v, want message send scopes", cfg.Scopes)
+	for _, want := range []string{"ChannelMessage.Send", "ChannelMessage.ReadWrite", "ChatMessage.Send", "Chat.ReadWrite", "Chat.Create"} {
+		if !slices.Contains(cfg.Scopes, want) {
+			t.Errorf("Scopes = %v, want %q", cfg.Scopes, want)
+		}
 	}
 	if !cfg.IsReadWrite() {
 		t.Error("IsReadWrite() = false, want true")

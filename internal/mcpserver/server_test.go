@@ -12,18 +12,32 @@ import (
 
 var readToolNames = []string{
 	"teams_get_current_user",
+	"teams_get_user",
+	"teams_list_users",
 	"teams_list_joined_teams",
 	"teams_list_channels",
+	"teams_get_channel",
+	"teams_list_team_members",
+	"teams_get_channel_message",
 	"teams_list_channel_messages",
 	"teams_list_channel_message_replies",
 	"teams_list_chats",
+	"teams_get_chat",
+	"teams_list_chat_members",
+	"teams_search_messages",
+	"teams_get_chat_message",
 	"teams_list_chat_messages",
 }
 
 var writeToolNames = []string{
+	"teams_create_chat",
 	"teams_send_channel_message",
+	"teams_update_channel_message",
+	"teams_delete_channel_message",
 	"teams_reply_to_channel_message",
 	"teams_send_chat_message",
+	"teams_update_chat_message",
+	"teams_delete_chat_message",
 }
 
 func testGraphClient(t *testing.T) *graph.Client {

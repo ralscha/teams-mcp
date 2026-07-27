@@ -46,10 +46,13 @@ const (
 var readOnlyScopes = []string{
 	"offline_access",
 	"User.Read",
+	"User.ReadBasic.All",
 	"Team.ReadBasic.All",
+	"TeamMember.Read.All",
 	"Channel.ReadBasic.All",
 	"ChannelMessage.Read.All",
 	"Chat.Read",
+	"ChatMember.Read",
 }
 
 // Config holds all settings needed to run the teams-mcp server.
@@ -169,7 +172,15 @@ func Load(args []string) (*Config, error) {
 func defaultScopes(mode Mode) []string {
 	scopes := slices.Clone(readOnlyScopes)
 	if mode == ModeReadWrite {
-		scopes = append(scopes, "ChannelMessage.Send", "ChatMessage.Send")
+		// ReadWrite scopes cover sending, editing, and soft-deleting messages,
+		// plus creating chats.
+		scopes = append(scopes,
+			"ChannelMessage.Send",
+			"ChannelMessage.ReadWrite",
+			"ChatMessage.Send",
+			"Chat.ReadWrite",
+			"Chat.Create",
+		)
 	}
 	return scopes
 }

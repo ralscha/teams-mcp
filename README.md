@@ -34,20 +34,39 @@ Read tools are always available:
 | Tool | Description |
 | --- | --- |
 | `teams_get_current_user` | Get the Microsoft 365 user whose Teams data is being accessed |
+| `teams_get_user` | Get one Microsoft 365 user by object id or UPN |
+| `teams_list_users` | List Microsoft 365 users with optional prefix filtering |
 | `teams_list_joined_teams` | List teams the user directly belongs to |
 | `teams_list_channels` | List channels in a team |
+| `teams_get_channel` | Get one channel by id |
+| `teams_list_team_members` | List members in a team |
+| `teams_get_channel_message` | Get a specific root channel message by id |
 | `teams_list_channel_messages` | List root messages in a channel |
 | `teams_list_channel_message_replies` | List replies to a root channel message |
-| `teams_list_chats` | List one-on-one, group, and meeting chats |
+| `teams_list_chats` | List one-on-one, group, and meeting chats, including participant summaries when available |
+| `teams_get_chat` | Get one chat by id |
+| `teams_list_chat_members` | List members in a chat |
+| `teams_search_messages` | Search channel and chat messages by free text |
+| `teams_get_chat_message` | Get a specific chat message by id |
 | `teams_list_chat_messages` | List messages in a chat |
 
 Write tools are exposed only with `TEAMS_MODE=readwrite`:
 
 | Tool | Description |
 | --- | --- |
+| `teams_create_chat` | Create a one-on-one or group chat |
 | `teams_send_channel_message` | Send a root channel message |
+| `teams_update_channel_message` | Edit an existing root channel message |
+| `teams_delete_channel_message` | Soft-delete an existing root channel message |
 | `teams_reply_to_channel_message` | Reply to a root channel message |
 | `teams_send_chat_message` | Send a message to an existing chat |
+| `teams_update_chat_message` | Edit an existing chat message |
+| `teams_delete_chat_message` | Soft-delete an existing chat message |
+
+When a message includes mentions, read tools return a structured `mentions`
+array with mentioned identity details. Write tools accept an optional
+`mentions` array; when provided, set `content_type` to `html` and include
+matching `<at id="N">...</at>` tags in message HTML.
 
 Paginated collection tools return Graph's opaque `next_link` when another
 page exists. Pass it back unchanged on the next call. Message bodies are
@@ -66,9 +85,13 @@ message sends require delegated user permissions.
    an app registration.
 2. Under **Authentication**, enable **Allow public client flows**.
 3. Add these **delegated** Microsoft Graph permissions for readonly mode:
-   `User.Read`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`,
-   `ChannelMessage.Read.All`, and `Chat.Read`.
-4. For readwrite mode also add `ChannelMessage.Send` and `ChatMessage.Send`.
+   `User.Read`, `User.ReadBasic.All`, `Team.ReadBasic.All`,
+   `TeamMember.Read.All`, `Channel.ReadBasic.All`, `ChannelMessage.Read.All`,
+   `Chat.Read`, and `ChatMember.Read`.
+4. For readwrite mode also add `ChannelMessage.Send`,
+   `ChannelMessage.ReadWrite`, `ChatMessage.Send`, `Chat.ReadWrite`, and
+   `Chat.Create`. Editing and soft-deleting messages requires the
+   `ReadWrite` scopes; sending alone is not sufficient.
 5. Grant tenant admin consent where your tenant requires it. In particular,
    `ChannelMessage.Read.All` requires admin consent.
 

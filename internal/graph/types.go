@@ -29,13 +29,25 @@ type Channel struct {
 
 // Chat is a one-on-one, group, or meeting chat.
 type Chat struct {
-	ID                  string `json:"id,omitempty"`
-	Topic               string `json:"topic,omitempty"`
-	ChatType            string `json:"chatType,omitempty"`
-	CreatedDateTime     string `json:"createdDateTime,omitempty"`
-	LastUpdatedDateTime string `json:"lastUpdatedDateTime,omitempty"`
-	WebURL              string `json:"webUrl,omitempty"`
-	TenantID            string `json:"tenantId,omitempty"`
+	ID                  string               `json:"id,omitempty"`
+	Topic               string               `json:"topic,omitempty"`
+	ChatType            string               `json:"chatType,omitempty"`
+	CreatedDateTime     string               `json:"createdDateTime,omitempty"`
+	LastUpdatedDateTime string               `json:"lastUpdatedDateTime,omitempty"`
+	WebURL              string               `json:"webUrl,omitempty"`
+	TenantID            string               `json:"tenantId,omitempty"`
+	Members             []ConversationMember `json:"members,omitempty"`
+}
+
+// ConversationMember is a participant in a Teams chat.
+type ConversationMember struct {
+	ID          string   `json:"id,omitempty"`
+	DisplayName string   `json:"displayName,omitempty"`
+	Roles       []string `json:"roles,omitempty"`
+	UserID      string   `json:"userId,omitempty"`
+	Email       string   `json:"email,omitempty"`
+	TenantID    string   `json:"tenantId,omitempty"`
+	ODataType   string   `json:"@odata.type,omitempty"`
 }
 
 // ItemBody holds chatMessage content. ContentType is usually "text" or
@@ -57,6 +69,20 @@ type ChatMessageFrom struct {
 	User        *Identity `json:"user,omitempty"`
 	Application *Identity `json:"application,omitempty"`
 	Device      *Identity `json:"device,omitempty"`
+}
+
+// MentionedIdentitySet identifies who is mentioned in a message mention.
+type MentionedIdentitySet struct {
+	User        *Identity `json:"user,omitempty"`
+	Application *Identity `json:"application,omitempty"`
+	Device      *Identity `json:"device,omitempty"`
+}
+
+// ChatMessageMention is one @mention embedded in a chat message.
+type ChatMessageMention struct {
+	ID          int                  `json:"id,omitempty"`
+	MentionText string               `json:"mentionText,omitempty"`
+	Mentioned   MentionedIdentitySet `json:"mentioned"`
 }
 
 // ChannelIdentity locates a message in a team and channel.
@@ -90,6 +116,7 @@ type ChatMessage struct {
 	From                 *ChatMessageFrom        `json:"from,omitempty"`
 	Body                 ItemBody                `json:"body"`
 	ChannelIdentity      *ChannelIdentity        `json:"channelIdentity,omitempty"`
+	Mentions             []ChatMessageMention    `json:"mentions,omitempty"`
 	Attachments          []ChatMessageAttachment `json:"attachments,omitempty"`
 }
 
@@ -97,4 +124,47 @@ type ChatMessage struct {
 type Page[T any] struct {
 	Value    []T    `json:"value"`
 	NextLink string `json:"@odata.nextLink,omitempty"`
+}
+
+// SearchRequest wraps Microsoft Graph /search/query requests.
+type SearchRequest struct {
+	Requests []SearchRequestItem `json:"requests"`
+}
+
+// SearchRequestItem is one Graph search request.
+type SearchRequestItem struct {
+	EntityTypes []string    `json:"entityTypes"`
+	Query       SearchQuery `json:"query"`
+	From        int         `json:"from,omitempty"`
+	Size        int         `json:"size,omitempty"`
+}
+
+// SearchQuery is the free-text query sent to Graph search.
+type SearchQuery struct {
+	QueryString string `json:"queryString"`
+}
+
+// SearchResponse wraps Microsoft Graph /search/query responses.
+type SearchResponse struct {
+	Value []SearchResponseItem `json:"value"`
+}
+
+// SearchResponseItem contains hit containers for one request.
+type SearchResponseItem struct {
+	HitsContainers []SearchHitsContainer `json:"hitsContainers"`
+}
+
+// SearchHitsContainer holds one page of search hits.
+type SearchHitsContainer struct {
+	Total                int         `json:"total"`
+	MoreResultsAvailable bool        `json:"moreResultsAvailable"`
+	Hits                 []SearchHit `json:"hits"`
+}
+
+// SearchHit is one Graph search hit.
+type SearchHit struct {
+	HitID    string      `json:"hitId,omitempty"`
+	Rank     int         `json:"rank,omitempty"`
+	Summary  string      `json:"summary,omitempty"`
+	Resource ChatMessage `json:"resource"`
 }
