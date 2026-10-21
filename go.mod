@@ -1,6 +1,6 @@
 module teams-mcp
 
-go 1.27.1
+go 1.27.2
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
@@ -12,7 +12,7 @@ require (
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 )
