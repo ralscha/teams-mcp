@@ -19,6 +19,7 @@ var readToolNames = []string{
 	"teams_get_channel",
 	"teams_list_team_members",
 	"teams_get_channel_message",
+	"teams_get_channel_message_reply",
 	"teams_list_channel_messages",
 	"teams_list_channel_message_replies",
 	"teams_list_chats",
@@ -79,6 +80,11 @@ func listToolNames(t *testing.T, server *mcp.Server) map[string]bool {
 	names := make(map[string]bool, len(result.Tools))
 	for _, tool := range result.Tools {
 		names[tool.Name] = true
+		if tool.Name == "teams_update_chat_message" || tool.Name == "teams_update_channel_message" {
+			if tool.Annotations == nil || tool.Annotations.DestructiveHint == nil || !*tool.Annotations.DestructiveHint {
+				t.Errorf("%s must identify edits as destructive", tool.Name)
+			}
+		}
 	}
 	return names
 }

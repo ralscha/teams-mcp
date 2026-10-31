@@ -90,7 +90,7 @@ func Load(args []string) (*Config, error) {
 		AuthorityURL: defaultAuthorityURL,
 		Mode:         ModeReadOnly,
 		Transport:    TransportStdio,
-		HTTPAddr:     ":8080",
+		HTTPAddr:     "127.0.0.1:8080",
 	}
 
 	if v := os.Getenv("TEAMS_AUTH_METHOD"); v != "" {
@@ -130,9 +130,16 @@ func Load(args []string) (*Config, error) {
 	mode := fs.String("mode", string(cfg.Mode), "Server mode: readonly or readwrite")
 	transport := fs.String("transport", string(cfg.Transport), "Transport: stdio or http")
 	httpAddr := fs.String("http-addr", cfg.HTTPAddr, "Address to listen on when --transport=http")
+	// Flag defaults are printed by --help and on parse errors. Never expose
+	// credentials inherited from the environment in those diagnostics.
+	fs.Lookup("teams-client-secret").DefValue = ""
+	fs.Lookup("teams-access-token").DefValue = ""
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+	if fs.NArg() != 0 {
+		return nil, fmt.Errorf("unexpected positional arguments; use --help for available flags")
 	}
 
 	cfg.TenantID = strings.TrimSpace(*tenantID)
@@ -213,6 +220,9 @@ func validateHTTPSURL(name, value string) error {
 	}
 	if u.Scheme != "https" || u.Host == "" {
 		return fmt.Errorf("%s must be an absolute https URL", name)
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(value, "#") {
+		return fmt.Errorf("%s must not contain credentials, a query, or a fragment", name)
 	}
 	return nil
 }

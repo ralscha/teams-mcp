@@ -85,7 +85,7 @@ func normalizeParticipantIDs(raw []string) ([]string, error) {
 type CreateChatInput struct {
 	ChatType           string   `json:"chat_type,omitempty" jsonschema:"oneOnOne (default) or group"`
 	Topic              string   `json:"topic,omitempty" jsonschema:"group chat topic; ignored for oneOnOne chats"`
-	ParticipantUserIDs []string `json:"participant_user_ids" jsonschema:"Entra user ids to include in the new chat"`
+	ParticipantUserIDs []string `json:"participant_user_ids" jsonschema:"Entra member user ids to include; the signed-in user is added automatically; oneOnOne requires exactly one other user"`
 }
 
 func createChat(client *graph.Client) mcp.ToolHandlerFor[CreateChatInput, CreatedChat] {
@@ -309,10 +309,10 @@ func deleteChatMessage(client *graph.Client) mcp.ToolHandlerFor[DeleteChatMessag
 func registerWriteTools(server *mcp.Server, client *graph.Client) {
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_create_chat", Description: "Create a new one-on-one or group Teams chat.", Annotations: nonDestructiveHint}, createChat(client))
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_send_channel_message", Description: "Send a new root message to a Teams channel.", Annotations: nonDestructiveHint}, sendChannelMessage(client))
-	mcp.AddTool(server, &mcp.Tool{Name: "teams_update_channel_message", Description: "Edit an existing root message in a Teams channel.", Annotations: nonDestructiveHint}, updateChannelMessage(client))
+	mcp.AddTool(server, &mcp.Tool{Name: "teams_update_channel_message", Description: "Edit an existing root message in a Teams channel.", Annotations: destructiveHint}, updateChannelMessage(client))
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_delete_channel_message", Description: "Soft-delete an existing root message in a Teams channel.", Annotations: destructiveHint}, deleteChannelMessage(client))
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_reply_to_channel_message", Description: "Reply to a root message in a Teams channel.", Annotations: nonDestructiveHint}, replyToChannelMessage(client))
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_send_chat_message", Description: "Send a message to an existing one-on-one, group, or meeting chat.", Annotations: nonDestructiveHint}, sendChatMessage(client))
-	mcp.AddTool(server, &mcp.Tool{Name: "teams_update_chat_message", Description: "Edit an existing message in a Teams chat.", Annotations: nonDestructiveHint}, updateChatMessage(client))
+	mcp.AddTool(server, &mcp.Tool{Name: "teams_update_chat_message", Description: "Edit an existing message in a Teams chat.", Annotations: destructiveHint}, updateChatMessage(client))
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_delete_chat_message", Description: "Soft-delete an existing message in a Teams chat.", Annotations: destructiveHint}, deleteChatMessage(client))
 }

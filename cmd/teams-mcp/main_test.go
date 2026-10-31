@@ -10,6 +10,15 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func TestHelpExitsSuccessfully(t *testing.T) {
+	previous := os.Args
+	os.Args = []string{"teams-mcp", "--help"}
+	t.Cleanup(func() { os.Args = previous })
+	if err := run(); err != nil {
+		t.Fatalf("run(--help) = %v", err)
+	}
+}
+
 func TestStdioTransportListTools(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()

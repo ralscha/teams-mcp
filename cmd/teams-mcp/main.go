@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -35,6 +36,9 @@ func run() error {
 	}
 
 	cfg, err := config.Load(os.Args[1:])
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -74,7 +78,7 @@ func runHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) error 
 	}, &mcp.StreamableHTTPOptions{Stateless: true})
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           handler,
+		Handler:           http.NewCrossOriginProtection().Handler(handler),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

@@ -80,7 +80,7 @@ type MentionedIdentitySet struct {
 
 // ChatMessageMention is one @mention embedded in a chat message.
 type ChatMessageMention struct {
-	ID          int                  `json:"id,omitempty"`
+	ID          int                  `json:"id"`
 	MentionText string               `json:"mentionText,omitempty"`
 	Mentioned   MentionedIdentitySet `json:"mentioned"`
 }

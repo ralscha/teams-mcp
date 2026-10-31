@@ -503,6 +503,10 @@ func TestDeleteMessages(t *testing.T) {
 
 func TestCreateChat(t *testing.T) {
 	client := newTestClient(t, "", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1.0/me" {
+			_ = json.NewEncoder(w).Encode(User{ID: "creator"})
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1.0/chats" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -513,14 +517,19 @@ func TestCreateChat(t *testing.T) {
 		if body.ChatType != "group" || body.Topic != "Incident response" {
 			t.Fatalf("unexpected chat metadata: %+v", body)
 		}
-		if len(body.Members) != 2 {
-			t.Fatalf("members = %+v, want 2", body.Members)
+		if len(body.Members) != 3 {
+			t.Fatalf("members = %+v, want 3 including the creator", body.Members)
 		}
 		if body.Members[0].ODataType != "#microsoft.graph.aadUserConversationMember" {
 			t.Fatalf("unexpected odata type: %+v", body.Members[0])
 		}
-		if !strings.Contains(body.Members[0].UserBind, "/v1.0/users('user-1')") {
+		if !strings.Contains(body.Members[0].UserBind, "/v1.0/users('creator')") {
 			t.Fatalf("unexpected member bind: %q", body.Members[0].UserBind)
+		}
+		for _, member := range body.Members {
+			if len(member.Roles) != 1 || member.Roles[0] != "owner" {
+				t.Errorf("member roles = %v, want owner", member.Roles)
+			}
 		}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(Chat{ID: "chat-42", ChatType: "group", Topic: "Incident response", WebURL: "https://teams.microsoft.com/l/chat/42"})
@@ -567,8 +576,8 @@ func TestRetryDelay(t *testing.T) {
 		want       time.Duration
 	}{
 		{name: "seconds", retryAfter: "1", attempt: 1, want: time.Second},
-		{name: "caps long retry-after", retryAfter: "3600", attempt: 1, want: retryMaxDelay},
-		{name: "negative", retryAfter: "-5", attempt: 1, want: 0},
+		{name: "preserves long retry-after", retryAfter: "3600", attempt: 1, want: time.Hour},
+		{name: "negative", retryAfter: "-5", attempt: 1, want: retryBaseDelay},
 		{name: "rejects duration syntax", retryAfter: "1m", attempt: 1, want: retryBaseDelay},
 		{name: "exponential backoff", retryAfter: "", attempt: 2, want: retryBaseDelay * 2},
 		{name: "backoff capped", retryAfter: "", attempt: 10, want: retryMaxDelay},

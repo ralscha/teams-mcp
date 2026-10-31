@@ -41,6 +41,7 @@ Read tools are always available:
 | `teams_get_channel` | Get one channel by id |
 | `teams_list_team_members` | List members in a team |
 | `teams_get_channel_message` | Get a specific root channel message by id |
+| `teams_get_channel_message_reply` | Get one reply by its id and root message id |
 | `teams_list_channel_messages` | List root messages in a channel |
 | `teams_list_channel_message_replies` | List replies to a root channel message |
 | `teams_list_chats` | List one-on-one, group, and meeting chats, including participant summaries when available |
@@ -68,10 +69,25 @@ array with mentioned identity details. Write tools accept an optional
 `mentions` array; when provided, set `content_type` to `html` and include
 matching `<at id="N">...</at>` tags in message HTML.
 
+For `teams_create_chat`, supply the other participants' Entra member user IDs;
+the signed-in user is added automatically. A one-on-one chat takes exactly one
+other user. Participants are assigned the `owner` role; in-tenant guest users
+requiring the `guest` role are not supported by this tool. See Microsoft's
+[chat creation requirements](https://learn.microsoft.com/graph/api/chat-post?view=graph-rest-1.0).
+
+Message search requires delegated authentication and searches the signed-in
+user's messages. Results include Graph's search snippet when available.
+
 Paginated collection tools return Graph's opaque `next_link` when another
 page exists. Pass it back unchanged on the next call. Message bodies are
 returned in the `text` or `html` form supplied by Teams. Treat message HTML as
 untrusted content and sanitize it before rendering it outside an MCP client.
+
+The client honors Graph's `Retry-After` header. Delays over 30 seconds are
+returned as tool errors with the requested delay instead of being retried
+early. Transient gateway errors are retried for reads and searches; writes
+are retried only when Graph explicitly rejects them with a throttling response.
+See Microsoft's [throttling guidance](https://learn.microsoft.com/graph/throttling).
 
 ## Recommended authentication: device code
 
@@ -124,6 +140,10 @@ and keep its directory accessible only to the account running `teams-mcp`.
 The default delegated scopes depend on the mode. Set `TEAMS_SCOPES` only when
 you need to override them.
 
+Cached tokens are isolated by tenant, application, authority, Graph base URL,
+and scopes. Caches written by older versions without cloud metadata require
+one new sign-in. Reordering the same scopes does not require another sign-in.
+
 ## Other authentication methods
 
 ### Existing access token
@@ -174,7 +194,7 @@ token wins, then a client secret, otherwise device code is selected.
 | `TEAMS_AUTHORITY_URL` | `--teams-authority-url` | `https://login.microsoftonline.com/` | Microsoft identity authority base |
 | `TEAMS_MODE` | `--mode` | `readonly` | `readonly` or `readwrite` |
 | `MCP_TRANSPORT` | `--transport` | `stdio` | `stdio` or `http` |
-| `MCP_HTTP_ADDR` | `--http-addr` | `:8080` | HTTP listen address |
+| `MCP_HTTP_ADDR` | `--http-addr` | `127.0.0.1:8080` | HTTP listen address |
 
 ## MCP client configuration
 
@@ -214,14 +234,15 @@ Streamable HTTP listens on the configured address:
 teams-mcp --transport=http --http-addr=127.0.0.1:8080
 ```
 
-The HTTP transport has no built-in client authentication. Bind to loopback or
-protect it with an authenticated reverse proxy and firewall, especially in
-readwrite mode. All MCP clients connected to one server process share that
-process's configured Microsoft identity.
+The HTTP transport defaults to loopback and rejects cross-origin browser
+POST requests. It has no built-in client authentication. For remote access,
+explicitly set the listen address and protect it with an authenticated reverse
+proxy and firewall, especially in readwrite mode. All MCP clients connected to
+one server process share that process's configured Microsoft identity.
 
 ## Development
 
-Requires Go 1.26.5 or newer. The full local check also requires Docker,
+Requires Go 1.27.3 or newer (see `go.mod`). The full local check also requires Docker,
 [Task](https://taskfile.dev/), and [GoReleaser](https://goreleaser.com/).
 
 ```bash

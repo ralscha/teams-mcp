@@ -1,8 +1,14 @@
 package mcpserver
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"teams-mcp/internal/config"
 	"teams-mcp/internal/graph"
 )
 
@@ -47,6 +53,76 @@ func TestMessageToSummaryMapsChannelIdentityAndSender(t *testing.T) {
 	}
 	if len(summary.Attachments) != 1 || summary.Attachments[0].ID != "att-1" {
 		t.Fatalf("unexpected attachments mapping: %+v", summary.Attachments)
+	}
+}
+
+func TestSearchMessagesValidation(t *testing.T) {
+	handler := searchMessages(testGraphClient(t))
+	for _, input := range []SearchMessagesInput{{Query: "   "}, {Query: "hello", From: -1}} {
+		if _, _, err := handler(t.Context(), nil, input); err == nil {
+			t.Errorf("search accepted invalid input: %+v", input)
+		}
+	}
+}
+
+func TestReadToolReplyAndSearchSnippet(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1.0/teams/team/channels/channel/messages/root/replies/reply":
+			_ = json.NewEncoder(w).Encode(graph.ChatMessage{
+				ID: "reply", ReplyToID: "root", Body: graph.ItemBody{ContentType: "text", Content: "reply body"},
+			})
+		case "/v1.0/search/query":
+			_, _ = w.Write([]byte(`{"value":[{"hitsContainers":[{"total":1,"hits":[{"summary":"matching snippet","resource":{"id":"match"}}]}]}]}`))
+		default:
+			t.Errorf("unexpected Graph request %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer backend.Close()
+	graphClient, err := graph.NewClient(backend.URL+"/v1.0/", "", backend.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(&config.Config{Mode: config.ModeReadOnly}, graphClient)
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(t.Context(), serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = serverSession.Close() }()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"teams_get_channel_message_reply", map[string]any{"team_id": "team", "channel_id": "channel", "message_id": "root", "reply_id": "reply"}},
+		{"teams_search_messages", map[string]any{"query": "matching"}},
+	} {
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: tc.name, Arguments: tc.args})
+		if err != nil || result.IsError {
+			t.Fatalf("CallTool(%s) = %+v, %v", tc.name, result, err)
+		}
+		data, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.name == "teams_get_channel_message_reply" {
+			var reply MessageSummary
+			if err := json.Unmarshal(data, &reply); err != nil || reply.ID != "reply" || reply.ReplyToID != "root" || reply.Content != "reply body" {
+				t.Errorf("reply result=%s, error=%v", data, err)
+			}
+		} else {
+			var matches SearchMessagesOutput
+			if err := json.Unmarshal(data, &matches); err != nil || len(matches.Messages) != 1 || matches.Messages[0].Summary != "matching snippet" {
+				t.Errorf("search result=%s, error=%v", data, err)
+			}
+		}
 	}
 }
 

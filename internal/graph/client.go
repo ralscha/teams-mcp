@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,6 +23,7 @@ const (
 	defaultRetryAttempts = 3
 	retryBaseDelay       = 250 * time.Millisecond
 	retryMaxDelay        = 2 * time.Second
+	maxRetryAfter        = 30 * time.Second
 )
 
 // Client is a Microsoft Graph client. Authentication is supplied by the
@@ -41,8 +44,11 @@ func NewClient(graphBaseURL, userID string, httpClient *http.Client) (*Client, e
 	if err != nil {
 		return nil, fmt.Errorf("teams graph: invalid base URL: %w", err)
 	}
-	if u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("teams graph: base URL must be absolute")
+	if (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return nil, fmt.Errorf("teams graph: base URL must be an absolute HTTP(S) URL")
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(graphBaseURL, "#") {
+		return nil, fmt.Errorf("teams graph: base URL must not contain credentials, a query, or a fragment")
 	}
 	if !strings.HasSuffix(u.Path, "/") {
 		u.Path += "/"
@@ -50,8 +56,13 @@ func NewClient(graphBaseURL, userID string, httpClient *http.Client) (*Client, e
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	// OAuth transports add credentials on every request, even after net/http
+	// strips Authorization during a redirect. Graph endpoints do not require
+	// redirects, so reject them without modifying the caller's HTTP client.
+	clientCopy := *httpClient
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{
-		httpClient: httpClient,
+		httpClient: &clientCopy,
 		baseURL:    u,
 		userID:     userID,
 		retries:    defaultRetryAttempts,
@@ -75,6 +86,9 @@ func (e *APIError) Error() string {
 	}
 	if e.Code != "" {
 		detail = e.Code + ": " + detail
+	}
+	if e.RetryAfter != "" {
+		detail += fmt.Sprintf(" (Retry-After: %s)", e.RetryAfter)
 	}
 	return fmt.Sprintf("teams graph: request failed with status %d: %s", e.StatusCode, detail)
 }
@@ -119,10 +133,15 @@ func (c *Client) doJSON(ctx context.Context, method, ref string, query url.Value
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			apiErr := parseAPIError(resp, responseBody)
-			if !isRetryableStatus(resp.StatusCode) || attempt >= c.retries {
+			if !isRetryableRequest(method, ref, resp.StatusCode) || attempt >= c.retries {
 				return apiErr
 			}
 			delay := retryDelay(resp.Header.Get("Retry-After"), attempt)
+			// Do not retry before the server permits it. Return long throttles
+			// to the caller instead of holding a tool call indefinitely.
+			if delay > maxRetryAfter {
+				return apiErr
+			}
 			if err := c.wait(ctx, delay); err != nil {
 				return fmt.Errorf("teams graph: retry canceled: %w", err)
 			}
@@ -151,18 +170,22 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func isRetryableStatus(code int) bool {
-	return code == http.StatusTooManyRequests || code == http.StatusServiceUnavailable || code == http.StatusGatewayTimeout
+func isRetryableRequest(method, ref string, code int) bool {
+	if code == http.StatusTooManyRequests {
+		return true // Graph explicitly rejected the operation due to throttling.
+	}
+	// A gateway/server failure can occur after a write has been committed.
+	// Only reads, including the read-only search POST, can safely be replayed.
+	readOnly := method == http.MethodGet || (method == http.MethodPost && ref == "search/query")
+	return readOnly && (code == http.StatusBadGateway || code == http.StatusServiceUnavailable || code == http.StatusGatewayTimeout)
 }
 
 func retryDelay(retryAfter string, attempt int) time.Duration {
 	if delay, ok := parseRetryAfter(retryAfter); ok {
-		// Retry-After is server controlled, so cap it to avoid blocking a tool
-		// call for an unbounded amount of time.
-		if delay > retryMaxDelay {
-			return retryMaxDelay
-		}
 		return delay
+	}
+	if attempt > 4 {
+		return retryMaxDelay
 	}
 	delay := retryBaseDelay << (attempt - 1)
 	if delay > retryMaxDelay {
@@ -178,22 +201,14 @@ func parseRetryAfter(value string) (time.Duration, bool) {
 	}
 	// RFC 9110 allows either a non-negative integer number of seconds or an
 	// HTTP-date.
-	if seconds, err := strconv.Atoi(trimmed); err == nil {
-		if seconds < 0 {
-			return 0, true
+	if seconds, err := strconv.ParseUint(trimmed, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+		if seconds > uint64(math.MaxInt64/int64(time.Second)) {
+			return time.Duration(math.MaxInt64), true
 		}
 		return time.Duration(seconds) * time.Second, true
 	}
-	for _, layout := range []string{time.RFC1123, time.RFC1123Z} {
-		timestamp, err := time.Parse(layout, trimmed)
-		if err != nil {
-			continue
-		}
-		delay := time.Until(timestamp)
-		if delay < 0 {
-			return 0, true
-		}
-		return delay, true
+	if timestamp, err := http.ParseTime(trimmed); err == nil {
+		return max(0, time.Until(timestamp)), true
 	}
 	return 0, false
 }
@@ -220,10 +235,20 @@ func (c *Client) resolveURL(ref string) (*url.URL, error) {
 	if err != nil {
 		return nil, fmt.Errorf("teams graph: invalid URL %q: %w", ref, err)
 	}
-	if parsed.IsAbs() {
-		if parsed.User != nil {
-			return nil, fmt.Errorf("teams graph: refusing URL containing user information")
+	if parsed.User != nil || parsed.Opaque != "" || strings.Contains(ref, "#") {
+		return nil, fmt.Errorf("teams graph: refusing URL containing credentials, an opaque path, or a fragment")
+	}
+	// ResolveReference cleans literal dot segments. Reject them first so an
+	// identifier such as '..' cannot silently select a different resource.
+	for i, segment := range strings.Split(parsed.Path, "/") {
+		if segment == "" && (i > 0 || !parsed.IsAbs()) {
+			return nil, fmt.Errorf("teams graph: resource identifiers must not be empty")
 		}
+		if segment == "." || segment == ".." {
+			return nil, fmt.Errorf("teams graph: refusing URL containing dot path segments")
+		}
+	}
+	if parsed.IsAbs() {
 		if !strings.EqualFold(parsed.Scheme, c.baseURL.Scheme) || !strings.EqualFold(parsed.Host, c.baseURL.Host) {
 			return nil, fmt.Errorf("teams graph: refusing pagination URL outside configured Graph origin")
 		}

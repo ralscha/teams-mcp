@@ -5,6 +5,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -270,17 +271,7 @@ func listChats(client *graph.Client) mcp.ToolHandlerFor[ListChatsInput, ListChat
 		}
 		out := ListChatsOutput{Chats: make([]ChatSummary, len(page.Value)), NextLink: page.NextLink}
 		for i, chat := range page.Value {
-			summary := ChatSummary{
-				ID: chat.ID, Topic: chat.Topic, ChatType: chat.ChatType,
-				CreatedDateTime: chat.CreatedDateTime, LastUpdatedDateTime: chat.LastUpdatedDateTime, WebURL: chat.WebURL,
-			}
-			if len(chat.Members) > 0 {
-				summary.Participants = make([]ChatParticipantSummary, len(chat.Members))
-				for j, member := range chat.Members {
-					summary.Participants[j] = chatParticipantSummary(member)
-				}
-			}
-			out.Chats[i] = summary
+			out.Chats[i] = chatToSummary(chat)
 		}
 		return nil, out, nil
 	}
@@ -297,18 +288,22 @@ func getChat(client *graph.Client) mcp.ToolHandlerFor[GetChatInput, ChatSummary]
 		if err != nil {
 			return nil, ChatSummary{}, fmt.Errorf("get chat %s: %w", in.ChatID, err)
 		}
-		summary := ChatSummary{
-			ID: chat.ID, Topic: chat.Topic, ChatType: chat.ChatType,
-			CreatedDateTime: chat.CreatedDateTime, LastUpdatedDateTime: chat.LastUpdatedDateTime, WebURL: chat.WebURL,
-		}
-		if len(chat.Members) > 0 {
-			summary.Participants = make([]ChatParticipantSummary, len(chat.Members))
-			for i, member := range chat.Members {
-				summary.Participants[i] = chatParticipantSummary(member)
-			}
-		}
-		return nil, summary, nil
+		return nil, chatToSummary(*chat), nil
 	}
+}
+
+func chatToSummary(chat graph.Chat) ChatSummary {
+	summary := ChatSummary{
+		ID: chat.ID, Topic: chat.Topic, ChatType: chat.ChatType,
+		CreatedDateTime: chat.CreatedDateTime, LastUpdatedDateTime: chat.LastUpdatedDateTime, WebURL: chat.WebURL,
+	}
+	if len(chat.Members) > 0 {
+		summary.Participants = make([]ChatParticipantSummary, len(chat.Members))
+		for i, member := range chat.Members {
+			summary.Participants[i] = chatParticipantSummary(member)
+		}
+	}
+	return summary
 }
 
 // ListChatMembersInput is the input for teams_list_chat_members.
@@ -354,8 +349,11 @@ type SearchMessagesOutput struct {
 
 func searchMessages(client *graph.Client) mcp.ToolHandlerFor[SearchMessagesInput, SearchMessagesOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in SearchMessagesInput) (*mcp.CallToolResult, SearchMessagesOutput, error) {
-		if in.Query == "" {
+		if strings.TrimSpace(in.Query) == "" {
 			return nil, SearchMessagesOutput{}, fmt.Errorf("query must not be empty")
+		}
+		if in.From < 0 {
+			return nil, SearchMessagesOutput{}, fmt.Errorf("from must not be negative")
 		}
 		response, err := client.SearchMessages(ctx, in.Query, in.From, pageSize(in.Size))
 		if err != nil {
@@ -367,7 +365,11 @@ func searchMessages(client *graph.Client) mcp.ToolHandlerFor[SearchMessagesInput
 				out.Total += container.Total
 				out.MoreResultsAvailable = out.MoreResultsAvailable || container.MoreResultsAvailable
 				for _, hit := range container.Hits {
-					out.Messages = append(out.Messages, messageToSummary(hit.Resource))
+					summary := messageToSummary(hit.Resource)
+					if summary.Summary == "" {
+						summary.Summary = hit.Summary
+					}
+					out.Messages = append(out.Messages, summary)
 				}
 			}
 		}
@@ -581,6 +583,24 @@ func getChannelMessage(client *graph.Client) mcp.ToolHandlerFor[GetChannelMessag
 	}
 }
 
+// GetChannelMessageReplyInput identifies a specific reply in a channel thread.
+type GetChannelMessageReplyInput struct {
+	TeamID    string `json:"team_id" jsonschema:"the team id"`
+	ChannelID string `json:"channel_id" jsonschema:"the channel id"`
+	MessageID string `json:"message_id" jsonschema:"the root channel message id"`
+	ReplyID   string `json:"reply_id" jsonschema:"the reply id"`
+}
+
+func getChannelMessageReply(client *graph.Client) mcp.ToolHandlerFor[GetChannelMessageReplyInput, MessageSummary] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in GetChannelMessageReplyInput) (*mcp.CallToolResult, MessageSummary, error) {
+		message, err := client.GetChannelMessageReply(ctx, in.TeamID, in.ChannelID, in.MessageID, in.ReplyID)
+		if err != nil {
+			return nil, MessageSummary{}, fmt.Errorf("get channel reply %s: %w", in.ReplyID, err)
+		}
+		return nil, messageToSummary(*message), nil
+	}
+}
+
 // GetChatMessageInput is the input for teams_get_chat_message.
 type GetChatMessageInput struct {
 	ChatID    string `json:"chat_id" jsonschema:"the chat id returned by teams_list_chats"`
@@ -606,6 +626,7 @@ func registerReadTools(server *mcp.Server, client *graph.Client) {
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_get_channel", Description: "Get one channel in a Microsoft Team by id.", Annotations: readOnlyHint}, getChannel(client))
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_list_team_members", Description: "List members in a Microsoft Team.", Annotations: readOnlyHint}, listTeamMembers(client))
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_get_channel_message", Description: "Get a specific root message in a Teams channel by id.", Annotations: readOnlyHint}, getChannelMessage(client))
+	mcp.AddTool(server, &mcp.Tool{Name: "teams_get_channel_message_reply", Description: "Get a specific reply in a Teams channel thread by id.", Annotations: readOnlyHint}, getChannelMessageReply(client))
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_list_channel_messages", Description: "List root messages in a Teams channel. Use teams_list_channel_message_replies for replies.", Annotations: readOnlyHint}, listChannelMessages(client))
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_list_channel_message_replies", Description: "List replies to a root Teams channel message.", Annotations: readOnlyHint}, listChannelMessageReplies(client))
 	mcp.AddTool(server, &mcp.Tool{Name: "teams_list_chats", Description: "List the target user's one-on-one, group, and meeting chats.", Annotations: readOnlyHint}, listChats(client))

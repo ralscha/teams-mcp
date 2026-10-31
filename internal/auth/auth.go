@@ -4,6 +4,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -76,6 +77,12 @@ func newDeviceCodeClient(ctx context.Context, cfg *config.Config, notify func(De
 				return nil, err
 			}
 		} else {
+			// Temporary outages and configuration failures should not force a
+			// fresh interactive login or discard a usable refresh token.
+			var retrieveErr *oauth2.RetrieveError
+			if token.RefreshToken != "" && (!errors.As(refreshErr, &retrieveErr) || retrieveErr.ErrorCode != "invalid_grant") {
+				return nil, fmt.Errorf("teams auth: refresh cached token: %w", refreshErr)
+			}
 			token = nil
 			source = nil
 		}
@@ -125,10 +132,12 @@ func graphDefaultScope(graphBaseURL string) string {
 }
 
 type cachedToken struct {
-	TenantID string        `json:"tenant_id"`
-	ClientID string        `json:"client_id"`
-	Scopes   []string      `json:"scopes"`
-	Token    *oauth2.Token `json:"token"`
+	TenantID     string        `json:"tenant_id"`
+	ClientID     string        `json:"client_id"`
+	AuthorityURL string        `json:"authority_url"`
+	GraphBaseURL string        `json:"graph_base_url"`
+	Scopes       []string      `json:"scopes"`
+	Token        *oauth2.Token `json:"token"`
 }
 
 func loadToken(path string, cfg *config.Config) (*oauth2.Token, error) {
@@ -147,10 +156,18 @@ func loadToken(path string, cfg *config.Config) (*oauth2.Token, error) {
 	if err := json.Unmarshal(data, &cached); err != nil {
 		return nil, fmt.Errorf("teams auth: decode token cache: %w", err)
 	}
-	if cached.TenantID != cfg.TenantID || cached.ClientID != cfg.ClientID || !slices.Equal(cached.Scopes, cfg.Scopes) {
+	if cached.TenantID != cfg.TenantID || cached.ClientID != cfg.ClientID ||
+		cached.AuthorityURL != cfg.AuthorityURL || cached.GraphBaseURL != cfg.GraphBaseURL ||
+		!slices.Equal(normalizedScopes(cached.Scopes), normalizedScopes(cfg.Scopes)) {
 		return nil, nil
 	}
 	return cached.Token, nil
+}
+
+func normalizedScopes(scopes []string) []string {
+	result := slices.Clone(scopes)
+	slices.Sort(result)
+	return slices.Compact(result)
 }
 
 func saveToken(path string, cfg *config.Config, token *oauth2.Token) error {
@@ -158,10 +175,12 @@ func saveToken(path string, cfg *config.Config, token *oauth2.Token) error {
 		return nil
 	}
 	data, err := json.MarshalIndent(cachedToken{
-		TenantID: cfg.TenantID,
-		ClientID: cfg.ClientID,
-		Scopes:   cfg.Scopes,
-		Token:    token,
+		TenantID:     cfg.TenantID,
+		ClientID:     cfg.ClientID,
+		AuthorityURL: cfg.AuthorityURL,
+		GraphBaseURL: cfg.GraphBaseURL,
+		Scopes:       normalizedScopes(cfg.Scopes),
+		Token:        token,
 	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("teams auth: encode token cache: %w", err)
@@ -187,15 +206,9 @@ func saveToken(path string, cfg *config.Config, token *oauth2.Token) error {
 		return fmt.Errorf("teams auth: close token cache: %w", err)
 	}
 	if err := os.Rename(tempName, path); err != nil {
-		// Windows does not replace an existing destination with os.Rename.
-		// Remove the old cache and retry; the temporary file remains secured
-		// with user-only permissions throughout.
-		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
-			return fmt.Errorf("teams auth: remove previous token cache: %w", removeErr)
-		}
-		if retryErr := os.Rename(tempName, path); retryErr != nil {
-			return fmt.Errorf("teams auth: replace token cache: %w", retryErr)
-		}
+		// os.Rename replaces existing files on Windows too. Preserve the
+		// previous cache if replacement fails (for example, a sharing violation).
+		return fmt.Errorf("teams auth: replace token cache: %w", err)
 	}
 	return nil
 }

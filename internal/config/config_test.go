@@ -1,7 +1,11 @@
 package config
 
 import (
+	"errors"
+	"flag"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -13,6 +17,44 @@ func clearEnv(t *testing.T) {
 		"TEAMS_AUTHORITY_URL", "TEAMS_SCOPES", "TEAMS_MODE", "MCP_TRANSPORT", "MCP_HTTP_ADDR",
 	} {
 		t.Setenv(key, "")
+	}
+}
+
+func TestHelpDoesNotExposeEnvironmentCredentials(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("TEAMS_ACCESS_TOKEN", "sensitive-token")
+	t.Setenv("TEAMS_CLIENT_SECRET", "sensitive-secret")
+	output, err := os.CreateTemp(t.TempDir(), "help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = output.Close() }()
+	previous := os.Stderr
+	os.Stderr = output
+	t.Cleanup(func() { os.Stderr = previous })
+	if _, err := Load([]string{"--help"}); !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("Load(--help) = %v", err)
+	}
+	data, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "sensitive-") {
+		t.Error("help exposed credentials from the environment")
+	}
+}
+
+func TestRejectsAmbiguousConfiguration(t *testing.T) {
+	clearEnv(t)
+	for _, args := range [][]string{
+		{"unexpected", "--mode=readwrite"},
+		{"--teams-graph-base-url=https://graph.microsoft.com/v1.0/?key=value"},
+		{"--teams-graph-base-url=https://graph.microsoft.com/v1.0/#fragment"},
+		{"--teams-authority-url=https://user:secret@login.microsoftonline.com/"},
+	} {
+		if _, err := Load(append([]string{"--teams-access-token=token"}, args...)); err == nil {
+			t.Errorf("Load(%v) accepted ambiguous configuration", args)
+		}
 	}
 }
 
@@ -28,7 +70,7 @@ func TestLoadDeviceCodeDefaults(t *testing.T) {
 	if cfg.AuthMethod != AuthDeviceCode {
 		t.Errorf("AuthMethod = %q, want %q", cfg.AuthMethod, AuthDeviceCode)
 	}
-	if cfg.Mode != ModeReadOnly || cfg.Transport != TransportStdio || cfg.HTTPAddr != ":8080" {
+	if cfg.Mode != ModeReadOnly || cfg.Transport != TransportStdio || cfg.HTTPAddr != "127.0.0.1:8080" {
 		t.Errorf("unexpected defaults: %+v", cfg)
 	}
 	wantScopes := []string{"offline_access", "User.Read", "User.ReadBasic.All", "Team.ReadBasic.All", "TeamMember.Read.All", "Channel.ReadBasic.All", "ChannelMessage.Read.All", "Chat.Read", "ChatMember.Read"}

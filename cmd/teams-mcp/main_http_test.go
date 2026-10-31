@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,13 +48,15 @@ func TestHTTPTransportListTools(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("cmd.Start() error = %v", err)
 	}
-	exitCh := make(chan error, 1)
-	go func() { exitCh <- cmd.Wait() }()
+	exited := make(chan struct{})
+	var exitErr error
+	go func() {
+		exitErr = cmd.Wait()
+		close(exited)
+	}()
 	defer func() {
-		if cmd.ProcessState == nil {
-			_ = cmd.Process.Kill()
-			<-exitCh
-		}
+		_ = cmd.Process.Kill()
+		<-exited
 	}()
 
 	endpoint := "http://" + addr
@@ -62,8 +65,8 @@ func TestHTTPTransportListTools(t *testing.T) {
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		select {
-		case err := <-exitCh:
-			t.Fatalf("teams-mcp exited before accepting HTTP connections: %v\n%s", err, logs.String())
+		case <-exited:
+			t.Fatalf("teams-mcp exited before accepting HTTP connections: %v\n%s", exitErr, logs.String())
 		default:
 		}
 		session, err = client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: endpoint}, nil)
@@ -76,6 +79,20 @@ func TestHTTPTransportListTools(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 	defer func() { _ = session.Close() }()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", "https://untrusted.example")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-origin POST status = %d, want 403", response.StatusCode)
+	}
 
 	result, err := session.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil {

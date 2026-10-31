@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -35,6 +36,16 @@ func (c *Client) SearchMessages(ctx context.Context, query string, from, size in
 // GetChannelMessage returns a specific root channel message.
 func (c *Client) GetChannelMessage(ctx context.Context, teamID, channelID, messageID string) (*ChatMessage, error) {
 	ref := "teams/" + url.PathEscape(teamID) + "/channels/" + url.PathEscape(channelID) + "/messages/" + url.PathEscape(messageID)
+	var message ChatMessage
+	if err := c.doJSON(ctx, http.MethodGet, ref, nil, nil, &message); err != nil {
+		return nil, err
+	}
+	return &message, nil
+}
+
+// GetChannelMessageReply returns one reply without listing the whole thread.
+func (c *Client) GetChannelMessageReply(ctx context.Context, teamID, channelID, messageID, replyID string) (*ChatMessage, error) {
+	ref := "teams/" + url.PathEscape(teamID) + "/channels/" + url.PathEscape(channelID) + "/messages/" + url.PathEscape(messageID) + "/replies/" + url.PathEscape(replyID)
 	var message ChatMessage
 	if err := c.doJSON(ctx, http.MethodGet, ref, nil, nil, &message); err != nil {
 		return nil, err
@@ -170,15 +181,36 @@ type createChatRequest struct {
 	Members  []createChatMember `json:"members"`
 }
 
-// CreateChat creates a one-on-one or group chat with the provided members.
+// CreateChat creates a chat with the provided members and the signed-in user.
 func (c *Client) CreateChat(ctx context.Context, chatType, topic string, participantUserIDs []string) (*Chat, error) {
-	request := createChatRequest{ChatType: chatType, Topic: topic, Members: make([]createChatMember, len(participantUserIDs))}
-	for i, userID := range participantUserIDs {
-		request.Members[i] = createChatMember{
-			ODataType: "#microsoft.graph.aadUserConversationMember",
-			Roles:     []string{},
-			UserBind:  c.userBindURL(userID),
+	// /me identifies the caller even when userID targets someone else's reads.
+	var caller User
+	if err := c.doJSON(ctx, http.MethodGet, "me", url.Values{"$select": {"id"}}, nil, &caller); err != nil {
+		return nil, fmt.Errorf("get chat creator: %w", err)
+	}
+	if caller.ID == "" {
+		return nil, fmt.Errorf("teams graph: chat creator has no user id")
+	}
+	request := createChatRequest{ChatType: chatType, Topic: topic, Members: make([]createChatMember, 0, len(participantUserIDs)+1)}
+	seen := make(map[string]bool, len(participantUserIDs)+1)
+	for _, userID := range append([]string{caller.ID}, participantUserIDs...) {
+		userID = strings.TrimSpace(userID)
+		if userID == "" {
+			return nil, fmt.Errorf("teams graph: participant user id must not be empty")
 		}
+		key := strings.ToLower(userID)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		request.Members = append(request.Members, createChatMember{
+			ODataType: "#microsoft.graph.aadUserConversationMember",
+			Roles:     []string{"owner"},
+			UserBind:  c.userBindURL(userID),
+		})
+	}
+	if chatType == "oneOnOne" && len(request.Members) != 2 {
+		return nil, fmt.Errorf("teams graph: oneOnOne chat requires one participant other than the signed-in user")
 	}
 	var chat Chat
 	if err := c.doJSON(ctx, http.MethodPost, "chats", nil, request, &chat); err != nil {
